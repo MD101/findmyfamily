@@ -1,0 +1,292 @@
+from fastapi import FastAPI, HTTPException
+from firebase_admin import auth, credentials
+import firebase_admin
+
+# Initialize Firebase Admin SDK
+cred = credentials.Certificate("firebase-service-account.json")
+firebase_admin.initialize_app(cred)
+
+app = FastAPI()
+
+@app.post("/get-custom-token")
+async def get_custom_token(request: dict):
+    userId = request.get("userId")
+    deviceId = request.get("deviceId")
+    
+    # Validate if this userId is allowed (your 6 users)
+    allowed_users = ["user1", "user2", "user3", "user4", "user5", "user6"]
+    
+    if userId not in allowed_users:
+        raise HTTPException(status_code=403, detail="User not authorized")
+    
+    # Optional: Check device ID for additional security
+    # if not is_device_authorized(deviceId):
+    #     raise HTTPException(status_code=403, detail="Device not authorized")
+    
+    try:
+        # Create custom token
+        custom_token = auth.create_custom_token(userId)
+        return {"customToken": custom_token.decode('utf-8')}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Failed to create token")
+        
+        
+        
+        
+3. API Request Structure
+
+http
+POST /location
+Authorization: Bearer <firebase_jwt>
+X-Device-ID: <uuid>
+Content-Type: application/json
+
+{
+  "latitude": 40.7128,
+  "longitude": -74.0060,
+  "timestamp": 1640995200000,
+  "accuracy": 10.5,
+  "device_id": "<uuid>"
+}
+FastAPI Server Changes Needed
+1. Firebase JWT Verification
+python
+from firebase_admin import credentials, auth
+import firebase_admin
+
+# Initialize Firebase Admin SDK
+cred = credentials.Certificate("path/to/service-account-key.json")
+firebase_admin.initialize_app(cred)
+
+async def verify_firebase_token(token: str):
+    try:
+        decoded_token = auth.verify_id_token(token)
+        return decoded_token['uid']  # Firebase user ID
+    except Exception as e:
+        raise HTTPException(status_code=401, detail="Invalid token")
+2. API Endpoint Structure
+python
+from fastapi import FastAPI, Header, HTTPException, Depends
+from pydantic import BaseModel
+
+app = FastAPI()
+
+class LocationData(BaseModel):
+    latitude: float
+    longitude: float
+    timestamp: int
+    accuracy: float
+    device_id: str
+
+@app.post("/location")
+async def receive_location(
+    location: LocationData,
+    authorization: str = Header(...),
+    x_device_id: str = Header(...)
+):
+    # Verify Firebase token
+    firebase_uid = verify_firebase_token(authorization.replace("Bearer ", ""))
+    
+    # Verify device ID matches
+    if location.device_id != x_device_id:
+        raise HTTPException(status_code=400, detail="Device ID mismatch")
+    
+    # Store in database
+    await store_location_data(
+        firebase_uid=firebase_uid,
+        device_id=x_device_id,
+        location_data=location.dict()
+    )
+    
+    return {"status": "success"}
+3. Database Schema
+sql
+CREATE TABLE locations (
+    id SERIAL PRIMARY KEY,
+    firebase_uid VARCHAR(128) NOT NULL,
+    device_id VARCHAR(128) NOT NULL,
+    latitude DECIMAL(10, 8) NOT NULL,
+    longitude DECIMAL(11, 8) NOT NULL,
+    accuracy FLOAT,
+    timestamp BIGINT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_firebase_uid ON locations(firebase_uid);
+CREATE INDEX idx_device_id ON locations(device_id);
+4. Required Dependencies
+bash
+pip install fastapi uvicorn firebase-admin sqlalchemy asyncpg
+
+The FastAPI server needs to verify Firebase JWT tokens and handle the dual device ID transmission (header + payload) for security validation.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Feedback submitted
+
+
+
+Now, with the current setup, the gps data is sent to the fastapi with the token, now what changes will I have to make in the fast api such that it will handle the future requests of only 6 or so devices and reject others?
+
+FastAPI Changes for Device Limitation
+You'll need to implement a whitelist system to allow only specific devices. Here are the required changes:
+
+1. Add Device Whitelist Management
+python
+from fastapi import FastAPI, HTTPException, Depends
+from pydantic import BaseModel
+from typing import List, Set
+import json
+
+# Load allowed device IDs (could be from database, config file, etc)
+ALLOWED_DEVICE_IDS: Set[str] = {
+    "device-uuid-1",
+    "device-uuid-2", 
+    "device-uuid-3",
+    "device-uuid-4",
+    "device-uuid-5",
+    "device-uuid-6"
+    # Add your 6 allowed device UUIDs here
+}
+
+# Or load from config file
+def load_allowed_devices():
+    try:
+        with open("allowed_devices.json", "r") as f:
+            return set(json.load(f))
+    except FileNotFoundError:
+        return set()
+2. Update Location Endpoint with Device Validation
+python
+@app.post("/location")
+async def receive_location(
+    location: LocationData,
+    authorization: str = Header(...),
+    x_device_id: str = Header(...)
+):
+    # Step 1: Verify Firebase token
+    firebase_uid = verify_firebase_token(authorization.replace("Bearer ", ""))
+    
+    # Step 2: Verify device ID matches
+    if location.device_id != x_device_id:
+        raise HTTPException(
+            status_code=400, 
+            detail="Device ID mismatch between header and payload"
+        )
+    
+    # Step 3: Check if device is whitelisted
+    if x_device_id not in ALLOWED_DEVICE_IDS:
+        raise HTTPException(
+            status_code=403, 
+            detail=f"Device {x_device_id} is not authorized"
+        )
+    
+    # Step 4: Store location data
+    await store_location_data(
+        firebase_uid=firebase_uid,
+        device_id=x_device_id,
+        location_data=location.dict()
+    )
+    
+    return {
+        "status": "success",
+        "device_id": x_device_id,
+        "message": "Location received"
+    }
+3. Add Admin Endpoints for Device Management
+python
+class DeviceManagement(BaseModel):
+    device_id: str
+    action: str  # "add" or "remove"
+
+@app.post("/admin/devices")
+async def manage_devices(device_mgmt: DeviceManagement, admin_key: str = Header(...)):
+    # Simple admin key validation (use proper auth in production)
+    if admin_key != "your-secure-admin-key":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    if device_mgmt.action == "add":
+        ALLOWED_DEVICE_IDS.add(device_mgmt.device_id)
+        return {"message": f"Device {device_mgmt.device_id} added"}
+    elif device_mgmt.action == "remove":
+        ALLOWED_DEVICE_IDS.discard(device_mgmt.device_id)
+        return {"message": f"Device {device_mgmt.device_id} removed"}
+    else:
+        raise HTTPException(status_code=400, detail="Invalid action")
+
+@app.get("/admin/devices")
+async def list_devices(admin_key: str = Header(...)):
+    if admin_key != "your-secure-admin-key":
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    return {"allowed_devices": list(ALLOWED_DEVICE_IDS)}
+4. Alternative: Database-Based Whitelist
+python
+# Database model for allowed devices
+class AllowedDevice(Base):
+    __tablename__ = "allowed_devices"
+    
+    device_id = Column(String, primary_key=True)
+    device_name = Column(String)
+    added_at = Column(DateTime, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True)
+
+async def is_device_allowed(device_id: str) -> bool:
+    async with get_db() as db:
+        result = await db.execute(
+            select(AllowedDevice).where(
+                AllowedDevice.device_id == device_id,
+                AllowedDevice.is_active == True
+            )
+        )
+        return result.scalar_one_or_none() is not None
+5. Enhanced Error Response
+python
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request, exc):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": exc.detail,
+            "status_code": exc.status_code,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    )
+6. Configuration File Option
+Create allowed_devices.json:
+
+json
+[
+    "device-uuid-1",
+    "device-uuid-2",
+    "device-uuid-3",
+    "device-uuid-4", 
+    "device-uuid-5",
+    "device-uuid-6"
+]
+Implementation Steps:
+Get device UUIDs from your 6 family devices by running the app once and logging the device IDs
+Add them to the whitelist using your preferred method (config file or database)
+Deploy the updated FastAPI with device validation
+Test with both allowed and unauthorized devices
+The system will now reject any location requests from devices not in your whitelist with a 403 Forbidden error.
