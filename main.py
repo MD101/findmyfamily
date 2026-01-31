@@ -4,12 +4,12 @@ from fastapi.staticfiles import StaticFiles
 #from starlette.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
 from app.api.location import router as location_router
-import uvicorn
+from uvicorn import run
 
-app = FastAPI()
+geo = FastAPI()
 
 #Register APIs
-app.include_router(location_router)
+geo.include_router(location_router)
 
 # Add CORS middleware
 origins = [
@@ -22,7 +22,7 @@ origins = [
     "http://127.0.0.1:8000",
 ]
 
-app.add_middleware(
+geo.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
@@ -30,16 +30,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/public", StaticFiles(directory="public"), name="public")
+geo.mount("/public", StaticFiles(directory="public"), name="public")
 
-@app.get("/favicon.ico")
+@geo.get("/favicon.ico")
 async def custom_favicon(request: Request):
     response = Response(content=open("public/favicon.ico", "rb").read(), media_type="image/x-icon")
     return response
 
-@app.get("/")
+@geo.get("/")
 def read_root():
     return {"Message": "Welcome to FindMyFamily"}
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", log_level="info", host="0.0.0.0", port=8000, reload=True)
+    host = "localhost"
+    port = 8080
+    run("main:geo", host=host, port=port, reload=True)

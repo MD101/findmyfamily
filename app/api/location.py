@@ -1,6 +1,14 @@
 from fastapi import APIRouter, Request
+from pydantic import BaseModel
 
 router = APIRouter()
+
+class LocationData(BaseModel):
+    latitude: float
+    longitude: float
+    timestamp: int
+    accuracy: float
+    device_id: str
 
 @router.post("/post_location")
 async def post_location(request: Request):
